@@ -1,0 +1,44 @@
+# .github/actions/maven-setup/action.yml
+# Composite action bundling the steps shared by all Maven workflows:
+# checkout, Maven repository caching, and JDK setup.
+#
+# 'server-id' is optional: pass it only when the calling workflow needs
+# Maven to authenticate against a server (e.g. for deploy), which requires
+# MAVEN_USERNAME/MAVEN_PASSWORD to be set as environment variables in the
+# step that actually runs Maven. Build-only workflows can omit it.
+
+name: Maven Setup
+description: Checkout, cache the Maven repository, and set up the JDK.
+
+inputs:
+  java-version:
+    description: Java version to use (e.g. '17', '21')
+    required: true
+  server-id:
+    description: Maven server id to configure for authentication (optional)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Cache Maven repository
+      uses: actions/cache@v4
+      with:
+        path: ~/.m2/repository
+        key: maven-${{ runner.os }}-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          maven-${{ runner.os }}-
+
+    - name: Set up JDK ${{ inputs.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: 'temurin'
+        server-id: ${{ inputs.server-id != '' && inputs.server-id || 'unused' }}
+        server-username: ${{ inputs.server-id != '' && 'MAVEN_USERNAME' || '' }}
+        server-password: ${{ inputs.server-id != '' && 'MAVEN_PASSWORD' || '' }}

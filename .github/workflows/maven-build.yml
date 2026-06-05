@@ -1,0 +1,51 @@
+# .github/workflows/maven-build.yml
+# Reusable workflow for Maven PR checks (build + verify).
+#
+# Inputs:
+#   java-version (required): Java version to use (e.g. '17', '21')
+#   maven-args (optional):   Maven arguments, default: '-B verify'
+#
+# Usage:
+#   name: Check PR
+#
+#   on:
+#     pull_request:
+#
+#   permissions:
+#     contents: read
+#
+#   jobs:
+#     build:
+#       concurrency:
+#         group: pr-checks-${{ github.repository }}-${{ github.event.pull_request.number }}
+#         cancel-in-progress: true
+#       uses: gbv/reposis_workflows/.github/workflows/maven-build.yml@v1
+#       with:
+#         java-version: '21'
+
+name: Maven Build
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        type: string
+        required: true
+      maven-args:
+        type: string
+        default: '-B verify'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: gbv/reposis_workflows/.github/actions/maven-setup@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: Build with Maven
+        env:
+          BUILD_ARGS: ${{ inputs.maven-args }}
+        run: mvn $BUILD_ARGS

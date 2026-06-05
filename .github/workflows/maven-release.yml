@@ -1,0 +1,78 @@
+# .github/workflows/maven-release.yml
+# Reusable workflow for Maven Release deploys.
+#
+# Inputs:
+#   java-version (required): Java version to use (e.g. '17', '21')
+#   maven-args (optional):   Maven arguments, default: '--batch-mode deploy'
+#   server-id (optional):    Maven server id, default: 'sonatype-central'
+#
+# Secrets:
+#   MAVEN_USERNAME (required): Maven server username
+#   MAVEN_PASSWORD (required): Maven server password
+#
+# Usage:
+#   name: Release Deploy
+#
+#   on:
+#     release:
+#       types: [created]
+#
+#   permissions:
+#     contents: read
+#
+#   jobs:
+#     deploy:
+#       concurrency:
+#         group: release-deploy-${{ github.repository }}-${{ github.ref_name }}
+#         # no cancel-in-progress: independent release tags (e.g. v1.2.0 and
+#         # a hotfix v1.2.1) should both be allowed to complete; this group
+#         # only prevents the same tag from being deployed twice in parallel
+#       uses: gbv/reposis_workflows/.github/workflows/maven-release.yml@v1
+#       with:
+#         java-version: '21'
+#       secrets:
+#         MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+#         MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+
+name: Maven Release Deploy
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        type: string
+        required: true
+      maven-args:
+        type: string
+        default: '--batch-mode clean deploy'
+      server-id:
+        type: string
+        default: 'sonatype-central'
+    secrets:
+      MAVEN_USERNAME:
+        required: true
+      MAVEN_PASSWORD:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: gbv/reposis_workflows/.github/actions/maven-setup@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+          server-id: ${{ inputs.server-id }}
+
+      - name: Set Release Version
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: mvn versions:set -DnewVersion="${RELEASE_VERSION}" -DgenerateBackupPoms=false
+
+      - name: Deploy Release to Sonatype
+        env:
+          DEPLOY_ARGS: ${{ inputs.maven-args }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+        run: mvn $DEPLOY_ARGS

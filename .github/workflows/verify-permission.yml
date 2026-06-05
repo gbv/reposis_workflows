@@ -1,0 +1,101 @@
+# .github/workflows/verify-permission.yml
+#
+# Reusable workflow to verify that a GitHub user has a minimum
+# permission level on a given repository. Fails (exit 1) if the actor
+# does not meet the required permission level, so callers can gate on
+# `needs.<job>.result == 'success'`.
+#
+# Permission levels are ranked as:
+#   admin > maintain > write > triage > read
+#
+# Inputs:
+#   actor (required):                Login of the user to check
+#   repo (required):                 Repository in 'owner/name' form
+#   required_permission (optional):  Minimum permission level required,
+#                                     default: 'write'. One of: admin,
+#                                     maintain, write, triage, read
+#   debug (optional):                Logs repo/actor/role/required
+#                                     permission, default: false
+#
+# Usage:
+#   uses: gbv/reposis_workflows/.github/workflows/verify-permission.yml@v1
+#   with:
+#     actor: ${{ github.actor }}
+#     repo:  ${{ github.repository }}
+#     # required_permission: 'triage'  # e.g. when gating on who may apply
+#                                      # a label, rather than who may push
+
+name: Verify Permission
+
+on:
+  workflow_call:
+    inputs:
+      actor:
+        required: true
+        type: string
+      debug:
+        required: false
+        type: boolean
+        default: false
+      repo:
+        required: true
+        type: string
+      required_permission:
+        required: false
+        type: string
+        default: write
+
+jobs:
+  check-permission:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Permission
+        env:
+          ACTOR: ${{ inputs.actor }}
+          DEBUG: ${{ inputs.debug }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ inputs.repo }}
+          REQUIRED_PERMISSION: ${{ inputs.required_permission }}
+        run: |
+          set -euo pipefail
+          
+          if [ -z "$ACTOR" ]; then
+            echo "No actor provided"
+            exit 1
+          fi
+
+          RESPONSE=$(curl -fsS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            "https://api.github.com/repos/${REPO}/collaborators/${ACTOR}/permission")
+
+          ROLE=$(jq -r '.permission' <<< "$RESPONSE")
+
+          if [[ "$DEBUG" == "true" ]]; then
+            echo "REPO=$REPO"
+            echo "ACTOR=$ACTOR"
+            echo "ROLE=$ROLE"
+            echo "REQUIRED_PERMISSION=$REQUIRED_PERMISSION"
+          fi
+
+          rank() {
+            case "$1" in
+              admin)    echo 5 ;;
+              maintain) echo 4 ;;
+              write)    echo 3 ;;
+              triage)   echo 2 ;;
+              read)     echo 1 ;;
+              *)        echo 0 ;;
+            esac
+          }
+
+          REQUIRED_RANK=$(rank "$REQUIRED_PERMISSION")
+          ACTUAL_RANK=$(rank "$ROLE")
+
+          if [[ "$ACTUAL_RANK" -ge "$REQUIRED_RANK" && "$ACTUAL_RANK" -gt 0 ]]; then
+            echo "User ${ACTOR} authorized (role=${ROLE}, required=${REQUIRED_PERMISSION})"
+          else
+            echo "User ${ACTOR} unauthorized (role=${ROLE}, required=${REQUIRED_PERMISSION})"
+            exit 1
+          fi

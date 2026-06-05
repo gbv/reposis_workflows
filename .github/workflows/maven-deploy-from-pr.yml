@@ -1,0 +1,202 @@
+# .github/workflows/maven-deploy-from-pr.yml
+# Reusable workflow for Maven Snapshot deploys triggered via a reusable
+# workflow call with structured payload (e.g. PR body or other text sources).
+#
+# The workflow extracts and validates deploy configuration
+# ('deploy.name') from the provided input text and then
+# performs a Maven snapshot deployment.
+#
+# Permission checks are executed against the user who triggered the workflow
+# (inputs.actor, typically mapped from github.actor).
+#
+# Why inputs.actor and not a PR author field: the input text (e.g. PR body)
+# may be edited by maintainers or reused across different triggering contexts.
+# Therefore, authorization is tied to the actual triggering identity rather
+# than the original content author.
+#
+# Note: if this workflow is invoked from `pull_request_target` in order to
+# access PR data from forks, the permission check is the primary safeguard
+# against unauthorized deployment attempts. The actor input must always come
+# from a trusted workflow context.
+#
+# Authorization relies on two independent, enforced checks:
+#   1. The triggering actor must have at least 'write' permission on the
+#      repository (job 'check-permission').
+#   2. The pull request must carry the label given in 'required-label'
+#      (job 'check-label'). Applying a label normally requires at least
+#      'triage' permission, so an untrusted PR cannot trigger a deploy by
+#      itself. A maintainer has to opt it in first.
+#
+# Both checks are enforced inside this workflow itself, not just in the
+# example caller below. Callers must pass 'required-label' and 'labels'
+# explicitly, so the label gate cannot accidentally be skipped by a caller
+# that omits an 'if:' condition.
+#
+# Inputs:
+#   actor (required):        Login of the user triggering the workflow
+#   debug (optional):        Enables verbose logging, default: false
+#   java-version (required): Java version to use (e.g. '17', '21')
+#   payload (required):      Input text containing deploy directives, e.g.:
+#                               deploy.name: <required>
+#                             '<required>' must be replaced with a value made
+#                             only of letters, digits, '.', '_' and '-'.
+#
+# Secrets:
+#   MAVEN_USERNAME (required): Maven server username
+#   MAVEN_PASSWORD (required): Maven server password
+#
+# Recommended usage - label-gated:
+#   Authorization relies on two independent checks: the triggering actor
+#   must have at least 'write' permission on the repository (enforced by
+#   this workflow via verify-permission.yml), AND the pull request must
+#   carry the 'snapshot-deploy' label. Applying a label normally requires
+#   at least 'triage' permission, so an untrusted PR cannot trigger a
+#   deploy by itself. A maintainer has to opt it in first.
+#
+#   name: Snapshot Deploy (PR)
+#
+#   on:
+#     pull_request:
+#       types: [labeled, synchronize, edited]
+#
+#   permissions:
+#     contents: read
+#
+#   jobs:
+#     deploy-pr:
+#       concurrency:
+#         group: snapshot-deploy-pr-${{ github.repository }}-${{ github.event.pull_request.number }}
+#         cancel-in-progress: true
+#       if: |
+#         github.event_name == 'pull_request' &&
+#         contains(github.event.pull_request.labels.*.name, 'snapshot-deploy') &&
+#         contains(github.event.pull_request.body, 'deploy.name:') &&
+#         !contains(github.event.pull_request.body, 'deploy.name: <required>')
+#       uses: gbv/reposis_workflows/.github/workflows/maven-deploy-from-pr.yml@v1
+#       with:
+#         actor: ${{ github.actor }}
+#         java-version: '21'
+#         payload: ${{ github.event.pull_request.body }}
+#       secrets:
+#         MAVEN_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+#         MAVEN_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+#
+# Security note:
+#   With the 'pull_request' setup shown above, the PR body is only read,
+#   never executed - 'deploy.name' is extracted with a strict allow-list
+#   regex (^[a-zA-Z0-9._-]+$) before it is used anywhere, so it cannot
+#   inject shell commands or extra Maven arguments.
+#
+#   If this workflow is ever invoked from 'pull_request_target' instead
+#   (e.g. to access PR data from forks in contexts where secrets aren't
+#   otherwise available), be aware that it then runs in the trusted
+#   repository context while still consuming untrusted PR data: secrets
+#   become accessible to code checked out from the PR head, while the PR
+#   body and any code in the PR remain untrusted. Never execute
+#   PR-controlled input directly, only validate and parse it. Treat the
+#   'snapshot-deploy' label as the actual authorization gate, not the
+#   body content itself.
+
+name: Maven Deploy from PR
+
+on:
+  workflow_call:
+    inputs:
+      actor:
+        type: string
+        required: true
+      debug:
+        type: boolean
+        required: false
+        default: false
+      java-version:
+        type: string
+        required: true
+      labels:
+        type: string
+        required: true
+      payload:
+        type: string
+        required: true
+      required-label:
+        type: string
+        required: true
+    secrets:
+      MAVEN_USERNAME:
+        required: true
+      MAVEN_PASSWORD:
+        required: true
+
+jobs:
+  check-permission:
+    uses: gbv/reposis_workflows/.github/workflows/verify-permission.yml@v1
+    with:
+      actor: ${{ inputs.actor }}
+      debug: ${{ inputs.debug }}
+      repo: ${{ github.repository }}
+
+  check-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required label is present
+        env:
+          REQUIRED_LABEL: ${{ inputs.required-label }}
+          LABELS: ${{ inputs.labels }}
+        run: |
+          if [[ ",${LABELS}," != *",${REQUIRED_LABEL},"* ]]; then
+            echo "::error::Required label '${REQUIRED_LABEL}' not present. Got: '${LABELS}'"
+            exit 1
+          fi
+          echo "Label check passed: '${REQUIRED_LABEL}' found."
+
+  parse:
+    needs: [check-permission, check-label]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ inputs.java-version }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Extract deployment config
+        id: deploy
+        uses: gbv/reposis_workflows/.github/actions/parse-deploy-directives@v1
+        with:
+          payload: ${{ inputs.payload }}
+          debug: ${{ inputs.debug }}
+
+      # TODO extract version static?
+      - name: Get Base Version from pom.xml
+        id: base
+        run: |
+          BASE_VERSION=$(mvn -q -DforceStdout \
+            -Dexpression=project.version \
+            help:evaluate | sed 's/-SNAPSHOT$//')
+          echo "base=$BASE_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compose Version
+        id: version
+        env:
+          DEPLOY_NAME: ${{ steps.deploy.outputs.name }}
+          BASE_VERSION: ${{ steps.base.outputs.base }}
+        run: echo "version=${BASE_VERSION}-${DEPLOY_NAME}-SNAPSHOT" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: [check-permission, check-label, parse]
+    uses: gbv/reposis_workflows/.github/workflows/maven-deploy.yml@v1
+    with:
+      java-version: ${{ inputs.java-version }}
+      version: ${{ needs.parse.outputs.version }}
+    secrets:
+      MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+      MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}

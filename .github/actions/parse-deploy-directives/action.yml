@@ -1,0 +1,58 @@
+# .github/actions/parse-deploy-directives/action.yml
+# Composite action that extracts and validates 'deploy.name' from a text
+# payload (typically a pull request body).
+#
+# Behavior (see parse.sh):
+#   - Looks for a line matching '^deploy.name:[[:space:]]*<value>'.
+#   - If multiple such lines exist, the first match wins.
+#   - The extracted value is trimmed and validated against the strict
+#     allow-list regex ^[a-zA-Z0-9._-]+$ — anything else (whitespace,
+#     shell metacharacters, newlines, quotes, etc.) causes the action to
+#     fail rather than being stripped or escaped.
+#   - Fails if no 'deploy.name' directive is found, or if the extracted
+#     value does not pass validation.
+#
+# This is the primary input-sanitization boundary for values that
+# originate from user-controlled text (e.g. a PR body) and are later
+# used to compose a Maven version string.
+#
+# Inputs:
+#   payload (required): Text to parse (e.g. a PR body)
+#   debug (optional):   Logs the first 500 characters of the payload,
+#                        default: 'false'
+#
+# Outputs:
+#   name: Sanitized deploy name (matches ^[a-zA-Z0-9._-]+$)
+#
+# Usage:
+#   - name: Extract deployment config
+#     id: deploy
+#     uses: gbv/reposis_workflows/.github/actions/parse-deploy-directives@v1
+#     with:
+#       payload: ${{ inputs.payload }}
+#       debug: ${{ inputs.debug }}
+#   # ${{ steps.deploy.outputs.name }} now holds the sanitized deploy name
+name: 'Parse Deploy Directives'
+description: 'Extracts and validates deploy.name from a payload text'
+
+inputs:
+  payload:
+    required: true
+  debug:
+    required: false
+    default: 'false'
+
+outputs:
+  name:
+    description: 'Sanitized deploy name'
+    value: ${{ steps.deploy.outputs.name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - id: deploy
+      shell: bash
+      env:
+        DEBUG: ${{ inputs.debug }}
+        PAYLOAD: ${{ inputs.payload }}
+      run: ${{ github.action_path }}/parse.sh

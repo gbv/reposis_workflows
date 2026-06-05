@@ -1,0 +1,87 @@
+# .github/workflows/maven-deploy.yml
+# Reusable workflow for Maven Snapshot deploys.
+#
+# Inputs:
+#   java-version (required): Java version to use (e.g. '17', '21')
+#   version (optional):      Snapshot version (e.g. 'test'), '-SNAPSHOT' is
+#                             appended automatically
+#   maven-args (optional):   Maven arguments, default:
+#                             '--batch-mode deploy -P deploy-to-sonatype'
+#   server-id (optional):    Maven server id, default: 'sonatype-central'
+#
+# Secrets:
+#   MAVEN_USERNAME (required): Sonatype username
+#   MAVEN_PASSWORD (required): Sonatype password
+#
+# Usage (push to main):
+#   name: Snapshot Deploy (main)
+#
+#   on:
+#     push:
+#       branches:
+#         - main
+#     workflow_dispatch:  # allows re-deploying a snapshot manually, e.g.
+#                          # after it was deleted from the repository
+#
+#   permissions:
+#     contents: read
+#
+#   jobs:
+#     deploy-snapshot-on-push:
+#       concurrency:
+#         group: snapshot-deploy-main-${{ github.repository }}
+#         cancel-in-progress: true
+#       uses: gbv/reposis_workflows/.github/workflows/maven-deploy.yml@v1
+#       with:
+#         java-version: '21'
+#       secrets:
+#         MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+#         MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+
+name: Maven Deploy
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        type: string
+        required: true
+      maven-args:
+        type: string
+        default: '--batch-mode clean deploy -P deploy-to-sonatype'
+      server-id:
+        type: string
+        default: 'sonatype-central'
+      version:
+        type: string
+        required: false
+    secrets:
+      MAVEN_USERNAME:
+        required: true
+      MAVEN_PASSWORD:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: gbv/reposis_workflows/.github/actions/maven-setup@v1
+        with:
+          java-version: ${{ inputs.java-version }}
+          server-id: ${{ inputs.server-id }}
+
+      - name: Set Snapshot Version
+        if: inputs.version != ''
+        env:
+          SNAPSHOT_VERSION: ${{ inputs.version }}
+        run: mvn versions:set -DnewVersion="${SNAPSHOT_VERSION}" -DgenerateBackupPoms=false
+
+      - name: Deploy Snapshot to Sonatype
+        env:
+          DEPLOY_ARGS: ${{ inputs.maven-args }}
+          MAVEN_USERNAME: ${{ secrets.MAVEN_USERNAME }}
+          MAVEN_PASSWORD: ${{ secrets.MAVEN_PASSWORD }}
+          REVISION_FLAG: ${{ inputs.version && format('-Drevision={0}', inputs.version) || '' }}
+        run: mvn $DEPLOY_ARGS $REVISION_FLAG
